@@ -28,10 +28,13 @@ from detector import (
     PlasticDetector,
     BackendReporter,
     PLASTIC_MAP,
+    RESIN_CODES,
     COLORS,
     BASE_DIR,
     CFG_PATH,
+    CFG_PATH_TINY,
     WEIGHTS_PATH,
+    WEIGHTS_PATH_TINY,
     NAMES_PATH,
 )
 
@@ -43,18 +46,31 @@ from detector import (
 class TestPlasticMap(unittest.TestCase):
     """Verify the COCO → plastic mapping is correct."""
 
-    def test_all_mapped_types_are_valid(self):
-        valid = {"plastic_bottle", "plastic_bag", "plastic_wrapper"}
-        for coco_name, ptype in PLASTIC_MAP.items():
-            self.assertIn(ptype, valid, f"'{coco_name}' maps to invalid type '{ptype}'")
+    def test_all_mapped_entries_have_required_fields(self):
+        required = {"item_type", "is_plastic", "material", "resin_code", "recyclable", "description"}
+        for coco_name, info in PLASTIC_MAP.items():
+            for field in required:
+                self.assertIn(field, info, f"'{coco_name}' missing field '{field}'")
 
-    def test_all_types_have_colors(self):
-        for ptype in set(PLASTIC_MAP.values()):
-            self.assertIn(ptype, COLORS, f"No colour defined for '{ptype}'")
+    def test_all_materials_are_valid(self):
+        valid_materials = set(RESIN_CODES.keys())
+        for coco_name, info in PLASTIC_MAP.items():
+            self.assertIn(info["material"], valid_materials,
+                          f"'{coco_name}' has invalid material '{info['material']}'")
+
+    def test_resin_codes_in_range(self):
+        for coco_name, info in PLASTIC_MAP.items():
+            self.assertIn(info["resin_code"], range(1, 8),
+                          f"'{coco_name}' has invalid resin_code {info['resin_code']}")
 
     def test_key_classes_are_mapped(self):
-        for name in ["bottle", "handbag", "cell phone"]:
+        for name in ["bottle", "handbag", "cell phone", "fork", "cup"]:
             self.assertIn(name, PLASTIC_MAP, f"Expected '{name}' in PLASTIC_MAP")
+
+    def test_bottle_is_pet(self):
+        self.assertEqual(PLASTIC_MAP["bottle"]["material"], "PET")
+        self.assertTrue(PLASTIC_MAP["bottle"]["recyclable"])
+        self.assertEqual(PLASTIC_MAP["bottle"]["resin_code"], 1)
 
 
 class TestModelFiles(unittest.TestCase):
@@ -63,8 +79,14 @@ class TestModelFiles(unittest.TestCase):
     def test_cfg_exists(self):
         self.assertTrue(CFG_PATH.is_file(), f"Missing {CFG_PATH}")
 
+    def test_cfg_tiny_exists(self):
+        self.assertTrue(CFG_PATH_TINY.is_file(), f"Missing {CFG_PATH_TINY}")
+
     def test_weights_exists(self):
         self.assertTrue(WEIGHTS_PATH.is_file(), f"Missing {WEIGHTS_PATH}")
+
+    def test_weights_tiny_exists(self):
+        self.assertTrue(WEIGHTS_PATH_TINY.is_file(), f"Missing {WEIGHTS_PATH_TINY}")
 
     def test_names_exists(self):
         self.assertTrue(NAMES_PATH.is_file(), f"Missing {NAMES_PATH}")
@@ -80,7 +102,11 @@ class TestDetectorInit(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.detector = PlasticDetector(conf_threshold=0.3)
+        # Use tiny model for fast tests
+        cls.detector = PlasticDetector(
+            cfg=CFG_PATH_TINY, weights=WEIGHTS_PATH_TINY, conf_threshold=0.3,
+            multi_scale=False, temporal_smooth=False,
+        )
 
     def test_class_names_loaded(self):
         self.assertEqual(len(self.detector.class_names), 80)
@@ -90,7 +116,10 @@ class TestDetectorInit(unittest.TestCase):
         # "bottle" is class index 39 in COCO
         bottle_idx = self.detector.class_names.index("bottle")
         self.assertIn(bottle_idx, self.detector.index_to_plastic)
-        self.assertEqual(self.detector.index_to_plastic[bottle_idx], "plastic_bottle")
+        info = self.detector.index_to_plastic[bottle_idx]
+        self.assertEqual(info["material"], "PET")
+        self.assertTrue(info["recyclable"])
+        self.assertEqual(info["plastic_type"], "plastic_bottle")
 
     def test_output_layers(self):
         self.assertGreater(len(self.detector.output_layers), 0)
@@ -101,7 +130,11 @@ class TestDetection(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.detector = PlasticDetector(conf_threshold=0.3)
+        # Use tiny model for fast tests
+        cls.detector = PlasticDetector(
+            cfg=CFG_PATH_TINY, weights=WEIGHTS_PATH_TINY, conf_threshold=0.3,
+            multi_scale=False, temporal_smooth=False,
+        )
 
     def test_detect_returns_list(self):
         """A blank frame should return an empty list (no objects)."""
@@ -121,10 +154,15 @@ class TestDetection(unittest.TestCase):
         for det in results:
             self.assertIn("label", det)
             self.assertIn("plastic_type", det)
+            self.assertIn("item_type", det)
+            self.assertIn("material", det)
+            self.assertIn("resin_code", det)
+            self.assertIn("recyclable", det)
             self.assertIn("confidence", det)
             self.assertIn("box", det)
             self.assertIsInstance(det["box"], tuple)
             self.assertEqual(len(det["box"]), 4)
+            self.assertIsInstance(det["recyclable"], bool)
 
     def test_draw_does_not_crash(self):
         """Drawing on a frame should not raise."""
@@ -133,6 +171,13 @@ class TestDetection(unittest.TestCase):
             {
                 "label": "bottle",
                 "plastic_type": "plastic_bottle",
+                "item_type": "Plastic Bottle",
+                "is_plastic": True,
+                "material": "PET",
+                "material_name": "Polyethylene Terephthalate",
+                "resin_code": 1,
+                "recyclable": True,
+                "description": "PET bottle",
                 "confidence": 0.92,
                 "box": (100, 100, 50, 120),
             }
@@ -207,6 +252,11 @@ try:
                 "plasticType": "plastic_bottle",
                 "confidence": 0.85,
                 "timestamp": "2026-02-14T12:00:00",
+                "itemType": "Plastic Bottle",
+                "material": "PET",
+                "materialName": "Polyethylene Terephthalate",
+                "resinCode": 1,
+                "recyclable": True,
             }
             r = self.client.post("/report", json=event)
             self.assertEqual(r.status_code, 200)
@@ -216,9 +266,11 @@ try:
         def test_report_batch(self):
             events = [
                 {"zoneId": "Z-101", "plasticType": "plastic_bottle",
-                 "confidence": 0.9, "timestamp": "2026-02-14T12:00:00"},
+                 "confidence": 0.9, "timestamp": "2026-02-14T12:00:00",
+                 "material": "PET", "resinCode": 1, "recyclable": True},
                 {"zoneId": "Z-102", "plasticType": "plastic_bag",
-                 "confidence": 0.7, "timestamp": "2026-02-14T12:01:00"},
+                 "confidence": 0.7, "timestamp": "2026-02-14T12:01:00",
+                 "material": "LDPE", "resinCode": 4, "recyclable": True},
             ]
             r = self.client.post("/report/batch", json=events)
             self.assertEqual(r.status_code, 200)
@@ -244,15 +296,20 @@ try:
         def test_stats(self):
             event = {
                 "zoneId": "Z-101",
-                "plasticType": "plastic_wrapper",
+                "plasticType": "plastic_cutlery",
                 "confidence": 0.6,
                 "timestamp": "2026-02-14T12:00:00",
+                "material": "PS",
+                "resinCode": 6,
+                "recyclable": False,
             }
             self.client.post("/report", json=event)
             r = self.client.get("/stats")
             data = r.json()
             self.assertEqual(data["total_detections"], 1)
-            self.assertIn("plastic_wrapper", data["by_type"])
+            self.assertIn("plastic_cutlery", data["by_type"])
+            self.assertIn("by_material", data)
+            self.assertIn("recyclable", data)
 
         def test_clear(self):
             event = {
@@ -268,13 +325,199 @@ try:
             self.assertEqual(r2.json()["total"], 0)
 
         def test_invalid_event(self):
-            bad = {"zoneId": "Z-101", "plasticType": "invalid_type",
-                   "confidence": 0.5, "timestamp": "2026-02-14T12:00:00"}
+            bad = {"zoneId": "Z-101", "plasticType": "plastic_bottle",
+                   "confidence": 5.0, "timestamp": "2026-02-14T12:00:00"}
             r = self.client.post("/report", json=bad)
             self.assertEqual(r.status_code, 422)
 
 except ImportError:
     pass  # FastAPI not installed — skip API tests
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# HYBRID DETECTOR TESTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestHybridDetectorImports(unittest.TestCase):
+    """Verify hybrid_detector module can be imported and has expected classes."""
+
+    def test_imports(self):
+        """hybrid_detector module should import without errors."""
+        import hybrid_detector
+        self.assertTrue(hasattr(hybrid_detector, "HybridPlasticDetector"))
+        self.assertTrue(hasattr(hybrid_detector, "TACODetector"))
+        self.assertTrue(hasattr(hybrid_detector, "ResinClassifier"))
+        self.assertTrue(hasattr(hybrid_detector, "TrashNetClassifier"))
+
+    def test_taco_material_mapping(self):
+        """All TACO material entries should have required fields."""
+        from hybrid_detector import TACO_TO_MATERIAL
+        required = {"item_type", "is_plastic", "material", "resin_code",
+                     "recyclable", "description"}
+        for cls_name, info in TACO_TO_MATERIAL.items():
+            with self.subTest(cls=cls_name):
+                self.assertTrue(required <= set(info.keys()),
+                                f"Missing keys in {cls_name}: {required - set(info.keys())}")
+
+    def test_taco_classes_length(self):
+        """TACO_CLASSES should have 61 entries (60 + background)."""
+        from hybrid_detector import TACO_CLASSES
+        self.assertEqual(len(TACO_CLASSES), 61)
+        self.assertEqual(TACO_CLASSES[0], "__background__")
+
+    def test_resin_labels_match_info(self):
+        """RESIN_LABELS and RESIN_INFO should be consistent."""
+        from hybrid_detector import RESIN_LABELS, RESIN_INFO
+        for label in RESIN_LABELS:
+            self.assertIn(label, RESIN_INFO)
+            self.assertIn("code", RESIN_INFO[label])
+            self.assertIn("name", RESIN_INFO[label])
+            self.assertIn("recyclable", RESIN_INFO[label])
+
+    def test_trashnet_classes(self):
+        """TrashNet should have 6 classes."""
+        from hybrid_detector import TRASHNET_CLASSES
+        self.assertEqual(len(TRASHNET_CLASSES), 6)
+        self.assertIn("plastic", TRASHNET_CLASSES)
+        self.assertIn("glass", TRASHNET_CLASSES)
+
+    def test_has_torch_flag(self):
+        """HAS_TORCH should be a boolean indicating PyTorch availability."""
+        from hybrid_detector import HAS_TORCH
+        self.assertIsInstance(HAS_TORCH, bool)
+
+    def test_plastic_category_mapping(self):
+        """HybridPlasticDetector._get_plastic_category should map correctly."""
+        from hybrid_detector import HybridPlasticDetector
+        self.assertEqual(
+            HybridPlasticDetector._get_plastic_category("Plastic Bottle", True),
+            "plastic_bottle",
+        )
+        self.assertEqual(
+            HybridPlasticDetector._get_plastic_category("Plastic Bag", True),
+            "plastic_bag",
+        )
+        self.assertEqual(
+            HybridPlasticDetector._get_plastic_category("Plastic Straw", True),
+            "plastic_straw",
+        )
+        self.assertEqual(
+            HybridPlasticDetector._get_plastic_category("Metal Can", False),
+            "non_plastic_waste",
+        )
+
+
+class TestHybridYOLOFallback(unittest.TestCase):
+    """Test hybrid pipeline with YOLO fallback (no PyTorch needed)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.yolo = PlasticDetector(
+            cfg=CFG_PATH_TINY, weights=WEIGHTS_PATH_TINY,
+            conf_threshold=0.3, multi_scale=False, temporal_smooth=False,
+        )
+
+    def test_hybrid_init_without_torch(self):
+        """HybridPlasticDetector should initialise even without PyTorch."""
+        from hybrid_detector import HybridPlasticDetector
+        hybrid = HybridPlasticDetector(
+            use_taco=False,
+            use_classifier=False,
+            use_trashnet=False,
+            yolo_fallback=self.yolo,
+        )
+        self.assertIsNotNone(hybrid)
+
+    def test_hybrid_detect_blank_frame(self):
+        """Hybrid detector should return empty list for blank frames."""
+        from hybrid_detector import HybridPlasticDetector
+        hybrid = HybridPlasticDetector(
+            use_taco=False,
+            use_classifier=False,
+            use_trashnet=False,
+            yolo_fallback=self.yolo,
+        )
+        blank = np.zeros((480, 640, 3), dtype=np.uint8)
+        results = hybrid.detect(blank)
+        self.assertIsInstance(results, list)
+
+    def test_hybrid_pipeline_status(self):
+        """pipeline_status should report disabled stages."""
+        from hybrid_detector import HybridPlasticDetector
+        hybrid = HybridPlasticDetector(
+            use_taco=False,
+            use_classifier=False,
+            use_trashnet=False,
+            yolo_fallback=self.yolo,
+        )
+        status = hybrid.pipeline_status
+        self.assertEqual(status["taco_detector"], "disabled")
+        self.assertEqual(status["resin_classifier"], "disabled")
+        self.assertEqual(status["trashnet_fallback"], "disabled")
+        self.assertEqual(status["yolo_fallback"], "active")
+
+    def test_hybrid_draw_doesnt_crash(self):
+        """draw() should handle an empty detections list without errors."""
+        from hybrid_detector import HybridPlasticDetector
+        blank = np.zeros((480, 640, 3), dtype=np.uint8)
+        result = HybridPlasticDetector.draw(blank, [])
+        self.assertIsNotNone(result)
+
+    def test_hybrid_draw_with_detection(self):
+        """draw() should annotate a frame with a synthetic detection."""
+        from hybrid_detector import HybridPlasticDetector
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        det = {
+            "label": "Clear plastic bottle",
+            "plastic_type": "plastic_bottle",
+            "item_type": "Plastic Bottle",
+            "is_plastic": True,
+            "material": "PET",
+            "material_name": "Polyethylene Terephthalate",
+            "resin_code": 1,
+            "recyclable": True,
+            "description": "PET bottle",
+            "confidence": 0.92,
+            "box": (50, 50, 100, 200),
+            "detection_source": "taco",
+            "classifier_source": "mobilenet_v3",
+        }
+        result = HybridPlasticDetector.draw(frame, [det])
+        self.assertIsNotNone(result)
+        # Verify frame was modified (not all-black)
+        self.assertGreater(result.sum(), 0)
+
+
+class TestDownloadModels(unittest.TestCase):
+    """Test download_models utility."""
+
+    def test_import(self):
+        """download_models should import without errors."""
+        import download_models
+        self.assertTrue(hasattr(download_models, "MODELS"))
+        self.assertTrue(hasattr(download_models, "check_status"))
+
+    def test_model_registry(self):
+        """All model groups should have required keys."""
+        import download_models
+        for key, group in download_models.MODELS.items():
+            with self.subTest(model=key):
+                self.assertIn("display_name", group)
+                self.assertIn("dir", group)
+                self.assertIn("files", group)
+                self.assertIsInstance(group["files"], list)
+                for f in group["files"]:
+                    self.assertIn("filename", f)
+                    self.assertIn("description", f)
+
+    def test_check_status(self):
+        """check_status should return a dict of model availability."""
+        import download_models
+        status = download_models.check_status()
+        self.assertIsInstance(status, dict)
+        self.assertIn("yolov4", status)
+        self.assertIn("taco", status)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

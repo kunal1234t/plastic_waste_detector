@@ -43,11 +43,24 @@ log = logging.getLogger("backend")
 # DATA MODELS
 # ─────────────────────────────────────────────────────────────────────────────
 
+VALID_PLASTIC_TYPES = [
+    "plastic_bottle", "plastic_bag", "plastic_wrapper",
+    "plastic_cutlery", "plastic_casing",
+]
+VALID_MATERIALS = ["PET", "HDPE", "PVC", "LDPE", "PP", "PS", "OTHER"]
+
+
 class DetectionEvent(BaseModel):
     zoneId: str = Field(..., examples=["Z-101"])
-    plasticType: Literal["plastic_bottle", "plastic_bag", "plastic_wrapper"]
+    plasticType: str = Field(..., examples=["plastic_bottle"])
     confidence: float = Field(..., ge=0.0, le=1.0)
     timestamp: str = Field(..., examples=["2026-02-14T12:00:00"])
+    # Material classification fields (optional for backward compat)
+    itemType: str | None = Field(None, examples=["Plastic Bottle"])
+    material: str | None = Field(None, examples=["PET"])
+    materialName: str | None = Field(None, examples=["Polyethylene Terephthalate"])
+    resinCode: int | None = Field(None, ge=1, le=7, examples=[1])
+    recyclable: bool | None = Field(None, examples=[True])
 
 
 class StatsResponse(BaseModel):
@@ -230,6 +243,11 @@ async def detect_image(
         record = {
             "zoneId": zone,
             "plasticType": det["plastic_type"],
+            "itemType": det.get("item_type", ""),
+            "material": det.get("material", ""),
+            "materialName": det.get("material_name", ""),
+            "resinCode": det.get("resin_code", 7),
+            "recyclable": det.get("recyclable", False),
             "confidence": det["confidence"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "received_at": datetime.now(timezone.utc).isoformat(),
@@ -250,7 +268,14 @@ async def detect_image(
         headers={
             "X-Detections-Count": str(len(results)),
             "X-Detections": json.dumps(
-                [{"type": d["plastic_type"], "confidence": d["confidence"]} for d in results]
+                [{
+                    "type": d["plastic_type"],
+                    "item": d.get("item_type", ""),
+                    "material": d.get("material", ""),
+                    "resin_code": d.get("resin_code", 7),
+                    "recyclable": d.get("recyclable", False),
+                    "confidence": d["confidence"],
+                } for d in results]
             ),
         },
     )
@@ -281,12 +306,21 @@ def get_stats():
     """Get aggregated detection statistics."""
     by_type: dict[str, int] = {}
     by_zone: dict[str, int] = {}
+    by_material: dict[str, int] = {}
+    recyclable_count = 0
+    non_recyclable_count = 0
 
     for d in detections:
         ptype = d.get("plasticType", "unknown")
         zone = d.get("zoneId", "unknown")
+        mat = d.get("material", "unknown")
         by_type[ptype] = by_type.get(ptype, 0) + 1
         by_zone[zone] = by_zone.get(zone, 0) + 1
+        by_material[mat] = by_material.get(mat, 0) + 1
+        if d.get("recyclable"):
+            recyclable_count += 1
+        else:
+            non_recyclable_count += 1
 
     latest = detections[-10:][::-1] if detections else []
 
@@ -294,6 +328,9 @@ def get_stats():
         "total_detections": len(detections),
         "by_type": by_type,
         "by_zone": by_zone,
+        "by_material": by_material,
+        "recyclable": recyclable_count,
+        "non_recyclable": non_recyclable_count,
         "latest": latest,
     }
 

@@ -393,9 +393,26 @@ class PlasticDetector:
 
         # ── GPU acceleration (if available) ──
         if use_gpu:
-            self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-            self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-            log.info("Using CUDA backend")
+            # Check if OpenCV was built with CUDA support
+            cuda_count = 0
+            try:
+                cuda_count = cv2.cuda.getCudaEnabledDeviceCount()
+            except AttributeError:
+                pass  # cv2.cuda module not available
+
+            if cuda_count > 0:
+                self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+                log.info("YOLOv4 using CUDA backend (OpenCV)")
+            else:
+                log.warning(
+                    "GPU requested but OpenCV was not built with CUDA support. "
+                    "Install opencv-python with CUDA or build from source. "
+                    "Falling back to CPU for YOLOv4. "
+                    "(PyTorch hybrid pipeline will still use CUDA if available.)"
+                )
+                self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+                self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
         else:
             self.net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
             self.net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
@@ -765,10 +782,11 @@ def _overlay_info(
     fps: float,
     count: int,
     zone: str,
+    device_info: str = "",
 ) -> None:
-    """Draw FPS and detection count on the top-left corner."""
+    """Draw FPS, detection count, and device info on the top-left corner."""
     info_lines = [
-        f"FPS: {fps:.1f}",
+        f"FPS: {fps:.1f}" + (f"  [{device_info}]" if device_info else ""),
         f"Detections: {count}",
         f"Zone: {zone}",
     ]
@@ -804,6 +822,20 @@ def run_webcam(
     frame_count = 0
     total_detections = 0
 
+    # Determine device info for overlay
+    device_info = ""
+    if hasattr(detector, "pipeline_status"):
+        status = detector.pipeline_status
+        dev = status.get("device", "cpu")
+        if dev != "cpu":
+            device_info = dev.upper()
+            if status.get("fp16"):
+                device_info += "+FP16"
+        else:
+            device_info = "CPU"
+    else:
+        device_info = "CPU"
+
     try:
         while True:
             t0 = time.time()
@@ -820,7 +852,7 @@ def run_webcam(
             # Draw
             detector.draw(frame, detections)
             fps = 1.0 / max(time.time() - t0, 1e-6)
-            _overlay_info(frame, fps, len(detections), zone)
+            _overlay_info(frame, fps, len(detections), zone, device_info)
 
             # Report to backend
             if reporter and detections:
@@ -1081,7 +1113,11 @@ Hybrid pipeline (requires PyTorch):
     )
     p.add_argument(
         "--gpu", action="store_true",
-        help="Use CUDA GPU acceleration (requires OpenCV with CUDA)",
+        help="Use NVIDIA CUDA GPU acceleration (YOLOv4 + PyTorch hybrid pipeline)",
+    )
+    p.add_argument(
+        "--no-fp16", action="store_true",
+        help="Disable FP16 half-precision on GPU (FP16 is on by default for CUDA)",
     )
     p.add_argument(
         "--tiny", action="store_true",
@@ -1188,6 +1224,8 @@ def main() -> None:
                 trashnet_weights=args.trashnet_weights,
                 yolo_fallback=yolo_detector,
                 frame_skip=args.frame_skip,
+                use_gpu=args.gpu,
+                use_fp16=not args.no_fp16,
             )
             log.info("Hybrid pipeline status: %s", hybrid_detector.pipeline_status)
         except Exception as e:
