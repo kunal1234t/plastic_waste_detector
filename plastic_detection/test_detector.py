@@ -446,5 +446,115 @@ class TestDownloadModels(unittest.TestCase):
         self.assertIn("taco", status)
 
 
+class TestROIFilter(unittest.TestCase):
+    """Tests for center-frame ROI margin filter."""
+
+    def test_roi_margin_stored(self):
+        from detector import PlasticDetector, CFG_PATH_TINY, WEIGHTS_PATH_TINY
+        det = PlasticDetector(
+            cfg=CFG_PATH_TINY, weights=WEIGHTS_PATH_TINY,
+            input_size=320, multi_scale=False, roi_margin=0.15,
+        )
+        self.assertAlmostEqual(det.roi_margin, 0.15)
+
+    def test_roi_margin_zero_keeps_all(self):
+        from detector import PlasticDetector, CFG_PATH_TINY, WEIGHTS_PATH_TINY
+        det = PlasticDetector(
+            cfg=CFG_PATH_TINY, weights=WEIGHTS_PATH_TINY,
+            input_size=320, multi_scale=False, roi_margin=0.0,
+        )
+        self.assertAlmostEqual(det.roi_margin, 0.0)
+
+
+class TestDetectionTracker(unittest.TestCase):
+    """Tests for temporal persistence filter."""
+
+    def setUp(self):
+        from detector import DetectionTracker
+        self.tracker = DetectionTracker(confirm_secs=5.0, min_presence=1.0, expire_secs=1.0)
+
+    def _make_det(self, label="bottle", box=(100, 100, 80, 200), conf=0.7):
+        return {
+            "label": label, "plastic_type": "plastic_bottle",
+            "item_type": "Plastic Bottle", "is_plastic": True,
+            "material": "PET", "material_name": "Polyethylene Terephthalate",
+            "resin_code": 1, "recyclable": True,
+            "description": "PET bottle", "confidence": conf, "box": box,
+            "waste_category": "waste", "sub_type": "disposable",
+        }
+
+    def test_empty_input(self):
+        result = self.tracker.update([])
+        self.assertEqual(result, [])
+
+    def test_brief_detection_ignored(self):
+        """Item appearing once should not be returned (< min_presence)."""
+        det = self._make_det()
+        result = self.tracker.update([det])
+        self.assertEqual(len(result), 0, "Should not show item before min_presence")
+
+    def test_sustained_detection_becomes_scanning(self):
+        """After min_presence seconds, item should appear as 'scanning'."""
+        import time as _time
+        det = self._make_det()
+        self.tracker.update([det])
+        _time.sleep(1.1)  # exceed min_presence=1.0
+        result = self.tracker.update([det])
+        self.assertGreater(len(result), 0)
+        self.assertEqual(result[0]["tracking_status"], "scanning")
+        self.assertGreater(result[0]["tracking_progress"], 0)
+        self.assertLess(result[0]["tracking_progress"], 1.0)
+
+    def test_confirmed_after_confirm_secs(self):
+        """After confirm_secs, status switches to 'confirmed'."""
+        from detector import DetectionTracker
+        tracker = DetectionTracker(confirm_secs=0.5, min_presence=0.1, expire_secs=1.0)
+        import time as _time
+        det = self._make_det()
+        tracker.update([det])
+        _time.sleep(0.6)
+        result = tracker.update([det])
+        self.assertGreater(len(result), 0)
+        self.assertEqual(result[0]["tracking_status"], "confirmed")
+        self.assertAlmostEqual(result[0]["tracking_progress"], 1.0)
+
+    def test_expired_track_removed(self):
+        """Item not seen for expire_secs should disappear."""
+        import time as _time
+        det = self._make_det()
+        self.tracker.update([det])
+        _time.sleep(1.2)  # exceed expire_secs=1.0
+        result = self.tracker.update([])  # no detections this frame
+        self.assertEqual(len(result), 0)
+
+    def test_different_labels_tracked_separately(self):
+        """Two different labels at same position are separate tracks."""
+        import time as _time
+        d1 = self._make_det(label="bottle")
+        d2 = self._make_det(label="cup")
+        self.tracker.update([d1, d2])
+        _time.sleep(1.1)
+        result = self.tracker.update([d1, d2])
+        labels = {r["label"] for r in result}
+        self.assertEqual(labels, {"bottle", "cup"})
+
+    def test_tracker_in_plastic_detector(self):
+        from detector import PlasticDetector, CFG_PATH_TINY, WEIGHTS_PATH_TINY
+        det = PlasticDetector(
+            cfg=CFG_PATH_TINY, weights=WEIGHTS_PATH_TINY,
+            input_size=320, multi_scale=False,
+            confirm_secs=5.0, min_presence=1.0,
+        )
+        self.assertIsNotNone(det._tracker)
+        self.assertAlmostEqual(det._tracker.confirm_secs, 5.0)
+
+    def test_iou_helper(self):
+        from detector import DetectionTracker
+        iou = DetectionTracker._iou((0, 0, 100, 100), (0, 0, 100, 100))
+        self.assertAlmostEqual(iou, 1.0)
+        iou2 = DetectionTracker._iou((0, 0, 100, 100), (200, 200, 100, 100))
+        self.assertAlmostEqual(iou2, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

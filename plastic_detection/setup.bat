@@ -88,42 +88,43 @@ set YOLO_TINY_CFG=model\yolov4-tiny.cfg
 set COCO_NAMES=model\coco.names
 
 set NEED_DOWNLOAD=0
-
 if not exist "!YOLO_WEIGHTS!" set NEED_DOWNLOAD=1
 if not exist "!YOLO_TINY_WEIGHTS!" set NEED_DOWNLOAD=1
 
-if !NEED_DOWNLOAD! equ 1 (
-    python download_models.py --yolov4
-    if %errorlevel% neq 0 (
-        echo.
-        echo [WARNING] Automatic download failed. Downloading manually...
-        echo.
-
-        if not exist "!YOLO_WEIGHTS!" (
-            echo Downloading yolov4.weights (246 MB)...
-            curl -L -o "!YOLO_WEIGHTS!" "https://github.com/AlexeyAB/darknet/releases/download/yolov4/yolov4.weights"
-        )
-        if not exist "!YOLO_TINY_WEIGHTS!" (
-            echo Downloading yolov4-tiny.weights (22 MB)...
-            curl -L -o "!YOLO_TINY_WEIGHTS!" "https://github.com/AlexeyAB/darknet/releases/download/yolov4/yolov4-tiny.weights"
-        )
-        if not exist "!YOLO_CFG!" (
-            echo Downloading yolov4.cfg...
-            curl -L -o "!YOLO_CFG!" "https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4.cfg"
-        )
-        if not exist "!YOLO_TINY_CFG!" (
-            echo Downloading yolov4-tiny.cfg...
-            curl -L -o "!YOLO_TINY_CFG!" "https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg"
-        )
-        if not exist "!COCO_NAMES!" (
-            echo Downloading coco.names...
-            curl -L -o "!COCO_NAMES!" "https://raw.githubusercontent.com/AlexeyAB/darknet/master/data/coco.names"
-        )
-    )
-) else (
+if !NEED_DOWNLOAD! equ 0 (
     echo [OK] Model weights already downloaded.
+    goto :verify
 )
 
+python download_models.py --yolov4
+if !errorlevel! equ 0 goto :verify
+
+echo.
+echo [WARNING] Automatic download failed. Downloading manually...
+echo.
+
+if not exist "!YOLO_WEIGHTS!" (
+    echo Downloading yolov4.weights ~246 MB ...
+    curl -L -o "!YOLO_WEIGHTS!" "https://github.com/AlexeyAB/darknet/releases/download/yolov4/yolov4.weights"
+)
+if not exist "!YOLO_TINY_WEIGHTS!" (
+    echo Downloading yolov4-tiny.weights ~22 MB ...
+    curl -L -o "!YOLO_TINY_WEIGHTS!" "https://github.com/AlexeyAB/darknet/releases/download/yolov4/yolov4-tiny.weights"
+)
+if not exist "!YOLO_CFG!" (
+    echo Downloading yolov4.cfg...
+    curl -L -o "!YOLO_CFG!" "https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4.cfg"
+)
+if not exist "!YOLO_TINY_CFG!" (
+    echo Downloading yolov4-tiny.cfg...
+    curl -L -o "!YOLO_TINY_CFG!" "https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg"
+)
+if not exist "!COCO_NAMES!" (
+    echo Downloading coco.names...
+    curl -L -o "!COCO_NAMES!" "https://raw.githubusercontent.com/AlexeyAB/darknet/master/data/coco.names"
+)
+
+:verify
 :: Verify
 echo.
 echo ============================================
